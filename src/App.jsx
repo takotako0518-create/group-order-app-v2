@@ -719,11 +719,25 @@ function OrderTab({
   const [toast, setToast] = useState("");
   const toastTimerRef = useRef(null);
   const [pendingDupItem, setPendingDupItem] = useState(null); // item pending confirmation
+  const [tableFullWarning, setTableFullWarning] = useState("");
 
   const showToast = (text) => {
     setToast(text);
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
     toastTimerRef.current = setTimeout(() => setToast(""), 1600);
+  };
+
+  const tableGuestNames = (tableId) => [
+    ...new Set(orders.filter((o) => o.tableId === tableId).map((o) => o.guestName)),
+  ];
+
+  // A table counts as full when it already has `capacity` distinct guests
+  // and the current guest isn't one of them yet.
+  const isTableFullForGuest = (tableId, name) => {
+    const table = tables.find((t) => t.id === tableId);
+    if (!table) return false;
+    const guests = tableGuestNames(tableId);
+    return guests.length >= table.capacity && !guests.includes(name);
   };
 
   const confirmAndAdd = (item) => {
@@ -732,6 +746,10 @@ function OrderTab({
   };
 
   const handleDishClick = (item) => {
+    if (isTableFullForGuest(selectedTableId, guestName)) {
+      setTableFullWarning(`${selectedTableName(tables, selectedTableId)}已經滿了，請選其他桌次，或請主辦人調整這桌的人數上限。`);
+      return;
+    }
     const otherGuestHasIt = orders.some(
       (o) => o.tableId === selectedTableId && o.itemId === item.id && o.guestName !== guestName
     );
@@ -801,16 +819,38 @@ function OrderTab({
           <select
             style={styles.select}
             value={selectedTableId || ""}
-            onChange={(e) => setSelectedTableId(e.target.value)}
+            onChange={(e) => {
+              const nextId = e.target.value;
+              if (isTableFullForGuest(nextId, guestName)) {
+                setTableFullWarning(`${selectedTableName(tables, nextId)}已經滿了，請選其他桌次，或請主辦人調整這桌的人數上限。`);
+                return;
+              }
+              setSelectedTableId(nextId);
+            }}
           >
-            {tables.map((t) => (
-              <option key={t.id} value={t.id}>
-                {t.name}
-              </option>
-            ))}
+            {tables.map((t) => {
+              const guestCount = tableGuestNames(t.id).length;
+              const full = isTableFullForGuest(t.id, guestName);
+              return (
+                <option key={t.id} value={t.id}>
+                  {t.name}
+                  {full ? `（已滿 ${guestCount}/${t.capacity}）` : ""}
+                </option>
+              );
+            })}
           </select>
         </div>
       </div>
+
+      {tableFullWarning && (
+        <div style={styles.inlineWarnBar}>
+          <AlertTriangle size={14} style={{ marginRight: 6, flexShrink: 0 }} />
+          {tableFullWarning}
+          <button style={styles.linkBtn} onClick={() => setTableFullWarning("")}>
+            知道了
+          </button>
+        </div>
+      )}
 
       {config.officialMenuUrl && (
         <a
@@ -2061,6 +2101,19 @@ const styles = {
     padding: "8px 14px",
     display: "flex",
     alignItems: "center",
+    background: "rgba(166,82,95,0.12)",
+    borderLeft: `3px solid ${COLORS.red}`,
+    fontSize: 13.5,
+    color: COLORS.red,
+    borderRadius: 4,
+  },
+  inlineWarnBar: {
+    margin: "0 0 16px",
+    padding: "10px 14px",
+    display: "flex",
+    alignItems: "center",
+    gap: 6,
+    flexWrap: "wrap",
     background: "rgba(166,82,95,0.12)",
     borderLeft: `3px solid ${COLORS.red}`,
     fontSize: 13.5,
