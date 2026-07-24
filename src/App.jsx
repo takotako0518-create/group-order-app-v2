@@ -1943,6 +1943,7 @@ function FontStyles() {
   return (
     <style>{`
       @import url('https://fonts.googleapis.com/css2?family=Noto+Serif+TC:wght@500;700;900&family=Noto+Sans+TC:wght@400;500;700&family=Roboto+Mono:wght@400;500;700&display=swap');
+      html, body { min-height: 100%; background: ${COLORS.paper}; margin: 0; }
       * { -webkit-tap-highlight-color: transparent; }
       .spin { animation: goa-spin 1s linear infinite; color: ${COLORS.jade}; }
       @keyframes goa-spin { to { transform: rotate(360deg); } }
@@ -1989,7 +1990,7 @@ const styles = {
   },
   shell: {
     display: "flex",
-    minHeight: "100%",
+    minHeight: "100vh",
     background: COLORS.paper,
     color: COLORS.ink,
     fontFamily: FONT.body,
