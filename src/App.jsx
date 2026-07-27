@@ -38,9 +38,9 @@ const DEFAULT_CONFIG = {
 };
 
 const DEFAULT_TABLES = [
-  { id: "table_1", name: "第一桌", capacity: 4 },
-  { id: "table_2", name: "第二桌", capacity: 4 },
-  { id: "table_3", name: "第三桌", capacity: 4 },
+  { id: "table_1", name: "第一桌", capacity: 4, guestNames: [] },
+  { id: "table_2", name: "第二桌", capacity: 4, guestNames: [] },
+  { id: "table_3", name: "第三桌", capacity: 4, guestNames: [] },
 ];
 
 const SAMPLE_MENU = [
@@ -471,7 +471,7 @@ export default function GroupOrderApp() {
     await trackedSafeSet("tables", next);
   };
   const addTable = () =>
-    persistTables([...tables, { id: uid("table"), name: `第${tables.length + 1}桌`, capacity: 4 }]);
+    persistTables([...tables, { id: uid("table"), name: `第${tables.length + 1}桌`, capacity: 4, guestNames: [] }]);
   const removeTable = (id) => {
     if (orders.some((o) => o.tableId === id)) return false;
     persistTables(tables.filter((t) => t.id !== id));
@@ -480,6 +480,22 @@ export default function GroupOrderApp() {
   const updateTableCapacity = (id, delta) =>
     persistTables(tables.map((t) => (t.id === id ? { ...t, capacity: Math.max(1, t.capacity + delta) } : t)));
   const renameTable = (id, name) => persistTables(tables.map((t) => (t.id === id ? { ...t, name } : t)));
+  const addGuestNameToTable = (tableId, name) => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    persistTables(
+      tables.map((t) => {
+        if (t.id !== tableId) return t;
+        const existing = t.guestNames || [];
+        if (existing.some((n) => normalizeName(n) === normalizeName(trimmed))) return t;
+        return { ...t, guestNames: [...existing, trimmed] };
+      })
+    );
+  };
+  const removeGuestNameFromTable = (tableId, name) =>
+    persistTables(
+      tables.map((t) => (t.id === tableId ? { ...t, guestNames: (t.guestNames || []).filter((n) => n !== name) } : t))
+    );
 
   /* ---------------- orders ---------------- */
   const persistOrders = async (next) => {
@@ -690,6 +706,8 @@ export default function GroupOrderApp() {
               removeTable={removeTable}
               updateTableCapacity={updateTableCapacity}
               renameTable={renameTable}
+              addGuestNameToTable={addGuestNameToTable}
+              removeGuestNameFromTable={removeGuestNameFromTable}
             />
           )}
         </main>
@@ -720,6 +738,7 @@ function OrderTab({
   const toastTimerRef = useRef(null);
   const [pendingDupItem, setPendingDupItem] = useState(null); // item pending confirmation
   const [tableFullWarning, setTableFullWarning] = useState("");
+  const [loginError, setLoginError] = useState("");
 
   const showToast = (text) => {
     setToast(text);
@@ -761,27 +780,84 @@ function OrderTab({
   };
 
   if (!guestName) {
-    const startOrdering = (name) => {
+    const startOrdering = (name, tableIdOverride) => {
+      const tableId = tableIdOverride || selectedTableId;
       const trimmed = name.trim();
-      if (!trimmed) return;
-      const existingOrder = orders.find((o) => o.guestName === trimmed);
+      const table = tables.find((t) => t.id === tableId);
+      if (!trimmed) {
+        setLoginError("請輸入暱稱");
+        return;
+      }
+      const roster = table?.guestNames || [];
+      if (roster.length > 0 && !roster.some((n) => normalizeName(n) === normalizeName(trimmed))) {
+        setLoginError(`「${table?.name}」需要使用下列其中一個指定暱稱才能點餐：${roster.join("、")}`);
+        return;
+      }
+      if (isTableFullForGuest(tableId, trimmed)) {
+        setLoginError(`「${table?.name}」已經滿了，請選其他桌次，或請主辦人調整這桌的人數上限。`);
+        return;
+      }
+      setLoginError("");
+      setSelectedTableId(tableId);
       setGuestName(trimmed);
-      if (existingOrder) {
-        setSelectedTableId(existingOrder.tableId);
-        showToast(`歡迎回來！已接續你在「${selectedTableName(tables, existingOrder.tableId)}」的點餐紀錄`);
+      const hasHistory = orders.some((o) => o.guestName === trimmed && o.tableId === tableId);
+      if (hasHistory) {
+        showToast(`歡迎回來！已接續你在「${table?.name}」的點餐紀錄`);
       }
     };
+
     return (
-      <div style={styles.loginCard}>
-        <div style={styles.loginStamp}>訪</div>
-        <h2 style={styles.sectionTitle}>先輸入您的暱稱</h2>
+      <div>
+        <h2 style={styles.sectionTitle}>請選擇您的桌次</h2>
         <p style={styles.mutedText}>
-          不需要密碼，輸入暱稱即可開始點餐；如果這個暱稱之前點過餐，會自動接續上次的點餐紀錄。
+          目前共有 {tables.length} 桌；如果桌次已經指定人員名單，點下方暱稱即可直接開始點餐。
         </p>
+        <div style={styles.rosterGrid}>
+          {tables.map((t) => {
+            const guests = tableGuestNames(t.id);
+            const roster = t.guestNames || [];
+            const active = selectedTableId === t.id;
+            return (
+              <div
+                key={t.id}
+                style={active ? styles.tablePickCardActive : styles.tablePickCard}
+                onClick={() => {
+                  setSelectedTableId(t.id);
+                  setLoginError("");
+                }}
+              >
+                <div style={styles.rosterCardHeader}>
+                  <span>{t.name}</span>
+                  <span style={styles.mutedTextSmall}>
+                    {guests.length}/{t.capacity} 人
+                  </span>
+                </div>
+                {roster.length === 0 ? (
+                  <span style={styles.mutedTextSmall}>未指定人員名單，可自由輸入暱稱</span>
+                ) : (
+                  <div style={styles.rosterChips}>
+                    {roster.map((n) => (
+                      <button
+                        key={n}
+                        style={guests.includes(n) ? styles.rosterChipMe : styles.rosterChip}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          startOrdering(n, t.id);
+                        }}
+                      >
+                        {n}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
         <div style={styles.inlineForm}>
           <input
             style={styles.input}
-            placeholder="例如：小明"
+            placeholder="輸入暱稱（有指定名單的桌次需完全相符）"
             value={nicknameInput}
             onChange={(e) => setNicknameInput(e.target.value)}
             onKeyDown={(e) => {
@@ -792,6 +868,11 @@ function OrderTab({
             開始點餐
           </button>
         </div>
+        {loginError && (
+          <p style={styles.warnText}>
+            <AlertTriangle size={13} style={{ marginRight: 4 }} /> {loginError}
+          </p>
+        )}
       </div>
     );
   }
@@ -851,6 +932,41 @@ function OrderTab({
           </button>
         </div>
       )}
+
+      <details style={styles.rosterDetails}>
+        <summary style={styles.rosterSummary}>
+          <Users size={13} /> 查看各桌目前狀況
+        </summary>
+        <div style={styles.rosterGrid}>
+          {tables.map((t) => {
+            const guests = tableGuestNames(t.id);
+            return (
+              <div key={t.id} style={styles.rosterCard}>
+                <div style={styles.rosterCardHeader}>
+                  <span>{t.name}</span>
+                  <span style={styles.mutedTextSmall}>
+                    {guests.length}/{t.capacity} 人
+                  </span>
+                </div>
+                {guests.length === 0 ? (
+                  <span style={styles.mutedTextSmall}>尚無人點餐</span>
+                ) : (
+                  <div style={styles.rosterChips}>
+                    {guests.map((g) => (
+                      <span
+                        key={g}
+                        style={g === guestName && t.id === selectedTableId ? styles.rosterChipMe : styles.rosterChip}
+                      >
+                        {g}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </details>
 
       {config.officialMenuUrl && (
         <a
@@ -1259,12 +1375,15 @@ function SetupTab({
   removeTable,
   updateTableCapacity,
   renameTable,
+  addGuestNameToTable,
+  removeGuestNameFromTable,
 }) {
   const [draft, setDraft] = useState(config);
   const [savedFlash, setSavedFlash] = useState(false);
   const [newItem, setNewItem] = useState({ name: "", price: "", category: "" });
   const [bulkText, setBulkText] = useState("");
   const [bulkMsg, setBulkMsg] = useState("");
+  const [newTableGuestName, setNewTableGuestName] = useState({});
   const [aiFile, setAiFile] = useState(null);
   const [aiExtracting, setAiExtracting] = useState(false);
   const [aiError, setAiError] = useState("");
@@ -1861,27 +1980,75 @@ function SetupTab({
         </div>
         <div style={styles.menuListWrap}>
           {tables.map((t) => (
-            <div key={t.id} style={styles.menuListRow}>
-              <input
-                style={styles.menuListInput}
-                value={t.name}
-                onChange={(e) => renameTable(t.id, e.target.value)}
-              />
-              <span style={styles.capacityStepper}>
-                <button style={styles.stepBtnSmMinus} onClick={() => updateTableCapacity(t.id, -1)}>
-                  <Minus size={11} />
+            <div key={t.id} style={styles.tableSetupBlock}>
+              <div style={styles.menuListRow}>
+                <input
+                  style={styles.menuListInput}
+                  value={t.name}
+                  onChange={(e) => renameTable(t.id, e.target.value)}
+                />
+                <span style={styles.capacityStepper}>
+                  <button style={styles.stepBtnSmMinus} onClick={() => updateTableCapacity(t.id, -1)}>
+                    <Minus size={11} />
+                  </button>
+                  <span style={styles.mutedTextSmall}>{t.capacity}位</span>
+                  <button style={styles.stepBtnSmPlus} onClick={() => updateTableCapacity(t.id, 1)}>
+                    <Plus size={11} />
+                  </button>
+                </span>
+                <button style={styles.iconBtn} onClick={() => removeTable(t.id)}>
+                  <Trash2 size={14} />
                 </button>
-                <span style={styles.mutedTextSmall}>{t.capacity}位</span>
-                <button style={styles.stepBtnSmPlus} onClick={() => updateTableCapacity(t.id, 1)}>
-                  <Plus size={11} />
+              </div>
+              <div style={styles.tableRosterRow}>
+                <span style={styles.mutedTextSmall}>指定人員：</span>
+                {(t.guestNames || []).length === 0 ? (
+                  <span style={styles.mutedTextSmall}>尚未指定，點餐時可自由輸入暱稱</span>
+                ) : (
+                  <div style={styles.rosterChips}>
+                    {(t.guestNames || []).map((n) => (
+                      <span key={n} style={styles.rosterChip}>
+                        {n}
+                        <button
+                          style={styles.rosterChipRemove}
+                          onClick={() => removeGuestNameFromTable(t.id, n)}
+                        >
+                          <X size={10} />
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                )}
+                <input
+                  style={styles.tableRosterInput}
+                  placeholder="新增人員暱稱"
+                  value={newTableGuestName[t.id] || ""}
+                  onChange={(e) => setNewTableGuestName((v) => ({ ...v, [t.id]: e.target.value }))}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && newTableGuestName[t.id]?.trim()) {
+                      addGuestNameToTable(t.id, newTableGuestName[t.id]);
+                      setNewTableGuestName((v) => ({ ...v, [t.id]: "" }));
+                    }
+                  }}
+                />
+                <button
+                  style={styles.iconBtn}
+                  onClick={() => {
+                    if (newTableGuestName[t.id]?.trim()) {
+                      addGuestNameToTable(t.id, newTableGuestName[t.id]);
+                      setNewTableGuestName((v) => ({ ...v, [t.id]: "" }));
+                    }
+                  }}
+                >
+                  <Plus size={14} />
                 </button>
-              </span>
-              <button style={styles.iconBtn} onClick={() => removeTable(t.id)}>
-                <Trash2 size={14} />
-              </button>
+              </div>
             </div>
           ))}
         </div>
+        <p style={styles.mutedTextSmall}>
+          有指定人員名單的桌次，點餐時暱稱必須跟名單裡的其中一個完全相同才能點餐；沒有指定名單的桌次可以自由輸入暱稱。
+        </p>
       </section>
 
       <p style={styles.mutedTextSmall}>
@@ -2264,6 +2431,105 @@ const styles = {
     padding: "6px 12px",
     marginBottom: 18,
     textDecoration: "none",
+  },
+  rosterDetails: {
+    marginBottom: 18,
+    background: "#fff",
+    border: `1px solid ${COLORS.line}`,
+    borderRadius: 10,
+    padding: "10px 14px",
+  },
+  rosterSummary: {
+    display: "flex",
+    alignItems: "center",
+    gap: 6,
+    fontSize: 13,
+    color: COLORS.accentDeep,
+    fontWeight: 600,
+  },
+  rosterGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))",
+    gap: 10,
+    marginTop: 12,
+  },
+  rosterCard: {
+    background: COLORS.paper,
+    border: `1px solid ${COLORS.paperDeep}`,
+    borderRadius: 8,
+    padding: "8px 10px",
+  },
+  tablePickCard: {
+    background: "#fff",
+    border: `1px solid ${COLORS.line}`,
+    borderRadius: 10,
+    padding: "10px 12px",
+    cursor: "pointer",
+  },
+  tablePickCardActive: {
+    background: "#fff",
+    border: `2px solid ${COLORS.accent}`,
+    borderRadius: 10,
+    padding: "9px 11px",
+    cursor: "pointer",
+    boxShadow: "0 2px 8px rgba(183,110,122,0.15)",
+  },
+  rosterCardHeader: {
+    display: "flex",
+    justifyContent: "space-between",
+    fontSize: 12.5,
+    fontWeight: 700,
+    color: COLORS.ink,
+    marginBottom: 6,
+  },
+  rosterChips: { display: "flex", flexWrap: "wrap", gap: 5 },
+  rosterChip: {
+    fontSize: 11.5,
+    background: "#fff",
+    border: `1px solid ${COLORS.line}`,
+    borderRadius: 12,
+    padding: "2px 8px",
+    color: COLORS.inkSoft,
+  },
+  rosterChipRemove: {
+    border: "none",
+    background: "none",
+    padding: 0,
+    marginLeft: 5,
+    color: COLORS.inkSoft,
+    display: "inline-flex",
+    verticalAlign: "-1px",
+  },
+  tableSetupBlock: {
+    border: `1px solid ${COLORS.paperDeep}`,
+    borderRadius: 8,
+    padding: "10px 10px 12px",
+  },
+  tableRosterRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    flexWrap: "wrap",
+    marginTop: 8,
+    paddingTop: 8,
+    borderTop: `1px dashed ${COLORS.paperDeep}`,
+  },
+  tableRosterInput: {
+    flex: 1,
+    minWidth: 100,
+    padding: "5px 9px",
+    borderRadius: 6,
+    border: `1px solid ${COLORS.line}`,
+    fontSize: 12.5,
+  },
+  rosterChipMe: {
+    fontSize: 11.5,
+    background: COLORS.accent,
+    border: `1px solid ${COLORS.accentDeep}`,
+    borderRadius: 12,
+    padding: "2px 8px",
+    color: "#fff",
+    fontWeight: 600,
   },
   menuLinkBar: {
     display: "flex",
